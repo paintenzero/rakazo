@@ -9,10 +9,11 @@ import {
   siteAlwaysAllowed,
   TAILNET_CONNECT_TOOL,
 } from "@rakazo/core";
-import { requestSite, sitesInText } from "@rakazo/core/egress";
+import { requestSite, sitesInText, urlSite } from "@rakazo/core/egress";
 import {
   findAutoReviewPreference,
   listApprovalRules,
+  readMessageBlocks,
   storedBatchActions,
   storedMessageBlocks,
 } from "@rakazo/db";
@@ -20,6 +21,10 @@ import {
   boundDirectApprovalDetails,
   catalogApprovalDetails,
 } from "../../approvals/approval-effect.js";
+import {
+  REVIEW_OWNER_MESSAGES,
+  REVIEW_OWNER_MESSAGES_WINDOW_MS,
+} from "../../approvals/review-owner-messages.js";
 import type { EffectiveModelRole } from "../../models/model-roles.js";
 import { effectiveModelRole } from "../../models/model-roles.js";
 import { routineTaskInstructions } from "../../routines/routine-watch.js";
@@ -69,7 +74,14 @@ export function connectorTrustKeys(
 export function createRunTrustLoaders(
   deps: ExecutorDeps,
   input: {
-    run: { userId: string; spaceId: string; trigger: string; delegatedFromRunId?: string | null };
+    run: {
+      userId: string;
+      spaceId: string;
+      trigger: string;
+      delegatedFromRunId?: string | null;
+      threadId?: string;
+      sourceMessageId?: string | null;
+    };
     runId: string;
     botId: string;
     taskPrompt: string;
@@ -172,6 +184,64 @@ export function createRunTrustLoaders(
     })();
     return ownerWordsPromise;
   };
+  // The owner's own earlier messages in the chat their message started this run from, oldest
+  // first. Only their own chat messages count: never a bot's, a channel member's or a tool's.
+  let earlierOwnerMessagesPromise: Promise<string[]> | undefined;
+  const loadEarlierOwnerMessages = () => {
+    earlierOwnerMessagesPromise ??= (async () => {
+      // A chat-app run's message is not loaded with the run, so it is read here by the same checks.
+      const sourceId =
+        sourceMessage?.id ?? (run.trigger === "messaging" ? run.sourceMessageId : undefined);
+      if (
+        !run.threadId ||
+        !ownerStartedRun ||
+        messagingChannelRun ||
+        !sourceId ||
+        run.trigger === BACKGROUND_HELPER_TRIGGER ||
+        run.trigger === HELPER_RESULT_TRIGGER
+      )
+        return [];
+      const source = await deps.prisma.message.findUnique({
+        where: { id: sourceId },
+        select: { seq: true, threadId: true, authorUserId: true, role: true, createdAt: true },
+      });
+      if (
+        source?.role !== "user" ||
+        source.threadId !== run.threadId ||
+        source.authorUserId !== run.userId
+      )
+        return [];
+      const rows = await deps.prisma.message.findMany({
+        where: {
+          threadId: run.threadId,
+          role: "user",
+          authorUserId: run.userId,
+          seq: { lt: source.seq },
+          createdAt: {
+            gte: new Date(source.createdAt.getTime() - REVIEW_OWNER_MESSAGES_WINDOW_MS),
+          },
+        },
+        orderBy: { seq: "desc" },
+        // Messages with only files or images hold no words, so look a little further back.
+        take: REVIEW_OWNER_MESSAGES * 4,
+        select: { id: true, blocks: true },
+      });
+      const kept: string[] = [];
+      for (const row of rows) {
+        const read = readMessageBlocks(row);
+        // A message that lost entries may have lost the owner's limits, so the reviewer gets no
+        // earlier messages rather than a partial history that reads as permission.
+        if (!read.intact) return [];
+        const text = read.blocks
+          .flatMap((block) => (block.kind === "text" ? [block.text] : []))
+          .join("\n");
+        if (text.trim()) kept.push(text);
+        if (kept.length === REVIEW_OWNER_MESSAGES) break;
+      }
+      return kept.reverse();
+    })();
+    return earlierOwnerMessagesPromise;
+  };
   let trustedSitesPromise: Promise<Set<string>> | undefined;
   const loadTrustedSites = () => {
     trustedSitesPromise ??= deps.prisma.externalEffect
@@ -181,12 +251,20 @@ export function createRunTrustLoaders(
           kind: { in: [...SITE_SENDING_TOOLS, TAILNET_CONNECT_TOOL] },
           status: { in: PASSED_EFFECT_STATUSES },
         },
-        select: { kind: true, request: true },
+        select: { kind: true, request: true, reviewDecision: true },
       })
       .then(async (rows) => {
         const sites = sitesInText(await loadOwnerWords());
         for (const row of rows) {
-          const site = requestSite(row.kind, row.request);
+          if (row.kind === TAILNET_CONNECT_TOOL) {
+            const site = requestSite(row.kind, row.request);
+            if (site) sites.add(site);
+            continue;
+          }
+          // Auto Review passed that one URL on what it carried; the owner never gave the site.
+          if (row.reviewDecision === "pass") continue;
+          const url = (row.request as { url?: unknown } | null)?.url;
+          const site = typeof url === "string" ? urlSite(url) : undefined;
           if (site) sites.add(site);
         }
         return sites;
@@ -247,6 +325,7 @@ export function createRunTrustLoaders(
     loadApprovalModel,
     loadAutoReviewPreference,
     loadOwnerWords,
+    loadEarlierOwnerMessages,
     loadTrustedSites,
     routineNamesNewSite,
     loadTrustedConnectors,

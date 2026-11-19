@@ -32,6 +32,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { SandboxFileTooLargeError } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core/node/sandbox-command";
+import { bestEffort } from "@rakazo/logging";
 import { hostCommandEnvironment } from "../../../computers/sandbox/sandbox-command-environment.js";
 import { abortedCommandEvents } from "../../../computers/sandbox/sandbox-command-events.js";
 import {
@@ -331,7 +332,8 @@ export class DesktopSandboxProvider implements SandboxProvider {
         () => this.sweepProcesses(),
       );
     } finally {
-      if (stagedHelper) await rm(stagedHelper, { force: true }).catch(() => undefined);
+      if (stagedHelper)
+        await bestEffort("remove the staged tailnet helper", rm(stagedHelper, { force: true }));
     }
   }
 

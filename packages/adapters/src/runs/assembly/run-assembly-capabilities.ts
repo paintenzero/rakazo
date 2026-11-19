@@ -556,6 +556,7 @@ export async function resolveRunCapabilities(
   const ownerStartedRun = isOwnerStartedRun(
     conversationRun.trigger,
     (origin?.sourceMessage ?? sourceMessage)?.role === "user",
+    nonOwnerChatRun,
   );
   // A hang-up run has no source message: its own nonce carries the call it closes.
   const callEndRun = run.trigger === "call_end";
@@ -604,7 +605,10 @@ export async function resolveRunCapabilities(
       userComputer = "connected";
       userComputerShell = !device.screenOnly;
       // The macOS and Windows desktops fetch a screen driver; Linux has none yet.
-      userComputerScreen = device.platform === "darwin" || device.platform === "win32";
+      const computers = await deps.userDevices.list(userComputerOwnerId);
+      userComputerScreen = [device, ...computers.filter((computer) => computer.connected)].some(
+        (computer) => computer.platform === "darwin" || computer.platform === "win32",
+      );
     } else userComputer = "offline";
   }
   const cloudAgent = await cloudAgentPromise;
@@ -666,6 +670,7 @@ export async function selectRunTools(
     connected: ConnectedRun;
     turnContext: TurnContext;
     capabilities: RunCapabilities;
+    meetingTranscriptsAvailable?: boolean;
   },
 ) {
   const { contextStrategy, mediaGeneration, paidServices } = services;
@@ -727,13 +732,35 @@ export async function selectRunTools(
         orderBy: { createdAt: "asc" },
         take: BOT_DIRECTORY_LIMIT,
       });
+  // Another group the bot belongs to, which post_to_group can post into.
+  const otherGroups = await deps.prisma.chatGroup.findMany({
+    where: {
+      spaceId: run.spaceId,
+      archivedAt: null,
+      thread: { isNot: null },
+      members: { some: { botId: bot.id } },
+      ...(conversationThread.groupId ? { id: { not: conversationThread.groupId } } : {}),
+    },
+    select: { id: true },
+    take: 1,
+  });
   const builtins = [
     ...selectBuiltinToolsForRun({
       ticketBoardEnabled,
-      // A call rings the bot's own person, whose chat it is; other members of a shared
-      // Space reach it by message for now.
-      phoneCallsEnabled: deps.phoneCallsEnabled && run.userId === bot.userId,
+      // A call rings the bot's own person in its own app chat, and only once they set up a voice
+      // provider; other members of a shared Space reach it by message for now.
+      phoneCallsEnabled:
+        deps.phoneCallsEnabled &&
+        run.userId === bot.userId &&
+        !conversationThread.externalConversationId &&
+        Boolean(
+          await deps.prisma.userVoiceCredential.findFirst({
+            where: { userId: run.userId },
+            select: { id: true },
+          }),
+        ),
       historyRetrievalEnabled: contextStrategy !== "current" && !unknownChannelSourceId,
+      meetingTranscriptsAvailable: parts.meetingTranscriptsAvailable,
       graphicalToolsAllowed,
       pageBrowserAllowed,
       groupId: conversationThread.groupId,
@@ -755,6 +782,7 @@ export async function selectRunTools(
         : bot.disabledBuiltinTools,
       fleetManagement: bot.fleetManagement,
       hasTeammates: teammates.length > 0,
+      hasGroups: otherGroups.length > 0,
       followUpFromUser: sourceMessage?.role === "user",
       userComputer: userComputerShell,
       userComputerScreen,

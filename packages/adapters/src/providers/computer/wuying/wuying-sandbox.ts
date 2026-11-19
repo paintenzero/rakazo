@@ -28,6 +28,7 @@ import {
 } from "@rakazo/adapter-kit";
 import { abortableDelay, isRetryableError } from "@rakazo/core";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core/node/sandbox-command";
+import { bestEffort } from "@rakazo/logging";
 import { sandboxNotFoundError } from "../../../computers/sandbox/sandbox-errors.js";
 import {
   boundedComputerActions,
@@ -563,9 +564,14 @@ export class WuyingSandboxProvider implements SandboxProvider {
       yield* this.executeInCall({ program, args, cwd, env, timeoutMs }, context);
     } finally {
       if (stagedHelper)
-        await this.tools
-          .call("fs_delete", { path: stagedHelper, recursive: true }, AbortSignal.timeout(15_000))
-          .catch(() => undefined);
+        await bestEffort(
+          "remove the staged tailnet helper",
+          this.tools.call(
+            "fs_delete",
+            { path: stagedHelper, recursive: true },
+            AbortSignal.timeout(15_000),
+          ),
+        );
     }
   }
 

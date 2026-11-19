@@ -10,6 +10,7 @@ import {
   TAILNET_CONNECT_TOOL,
 } from "@rakazo/core";
 import { selectCloudAgentTools } from "../../cloud-agents/cloud-agent-tools-select.js";
+import { READ_MEETING_TRANSCRIPT } from "../../meetings/meeting-chat.tool-definition.js";
 import { selectMemoryTools } from "../../memory/memory-tools.js";
 import { filterImageReturningComputerTools } from "../../models/model-vision.js";
 import { builtinAgentTools } from "../../tools/builtin.tool-definition.js";
@@ -27,6 +28,7 @@ export const READ_ONLY_AGENT_TOOLS = new Set([
   "list_fleet",
   "read_file",
   "read_history",
+  READ_MEETING_TRANSCRIPT,
   "read_email",
   "search_history",
   "request_takeover",
@@ -101,6 +103,7 @@ export function selectBuiltinToolsForRun(options: {
   ticketBoardEnabled?: boolean;
   phoneCallsEnabled?: boolean;
   historyRetrievalEnabled?: boolean;
+  meetingTranscriptsAvailable?: boolean;
   graphicalToolsAllowed: boolean;
   /** Page browser tools need a graphical computer (Chrome), not model vision. */
   pageBrowserAllowed?: boolean;
@@ -127,6 +130,8 @@ export function selectBuiltinToolsForRun(options: {
   fleetManagement?: boolean;
   /** False when the Space has no other bot to message. */
   hasTeammates?: boolean;
+  /** The bot belongs to a group other than the one this run is in. */
+  hasGroups?: boolean;
   /** A follow-up run whose source message the user wrote. */
   followUpFromUser?: boolean;
   /** The person who started this run has their desktop connected (see userComputerOwner). */
@@ -143,7 +148,11 @@ export function selectBuiltinToolsForRun(options: {
   emailSend?: boolean;
 }) {
   const disabled = disabledBuiltinToolSet(options.disabledBuiltinTools);
-  const ownerStartedRun = isOwnerStartedRun(options.trigger, Boolean(options.followUpFromUser));
+  const ownerStartedRun = isOwnerStartedRun(
+    options.trigger,
+    Boolean(options.followUpFromUser),
+    options.messagingChannelRun,
+  );
   // Claiming is offered only in the owner's own chat, so once the bot claims an address there it
   // can read the mail that follows, such as a sign-up code, in the same run.
   const emailClaimOffered =
@@ -185,6 +194,7 @@ export function selectBuiltinToolsForRun(options: {
       // Alone in its Space a bot has nobody to message. A bot it creates gets its first task
       // from spawn_bot, and its reply starts a run that offers message_bot.
       (options.hasTeammates !== false || tool.name !== "message_bot") &&
+      (options.hasGroups === true || tool.name !== "post_to_group") &&
       (options.ticketBoardEnabled ||
         (tool.name !== "board_tickets" && !tool.name.startsWith("ticket_"))) &&
       (!isBackgroundRunTrigger(options.trigger) ||
@@ -202,6 +212,7 @@ export function selectBuiltinToolsForRun(options: {
       (emailClaimOffered || tool.name !== "claim_email_address") &&
       (options.userComputer || tool.name !== "user_computer_shell") &&
       (options.tailnet || tool.name !== TAILNET_CONNECT_TOOL) &&
+      (options.userComputer || options.userComputerScreen || tool.name !== "user_computer_list") &&
       (options.userComputerScreen || !USER_COMPUTER_SCREEN_TOOLS.has(tool.name)) &&
       // Already on a call, or reached through a messaging channel that cannot ring.
       ((options.phoneCallsEnabled &&
@@ -212,6 +223,7 @@ export function selectBuiltinToolsForRun(options: {
         tool.name !== "call_user") &&
       (options.historyRetrievalEnabled ||
         !["search_history", "read_history"].includes(tool.name)) &&
+      (options.meetingTranscriptsAvailable || tool.name !== READ_MEETING_TRANSCRIPT) &&
       (!options.messagingChannelRun ||
         (!SCHEDULE_TOOL_NAMES.has(tool.name) &&
           !SKILL_TOOL_NAMES.has(tool.name) &&
@@ -257,16 +269,18 @@ const FOLLOW_UP_TOOL_NAMES = [
 ];
 
 /**
- * Whether this run can set its own follow-ups. Only a run the owner started can tell what is
- * still open with them; routines, webhooks, channels, subagents and hand-offs from other bots
- * are not, and some of them would need approval for every schedule.
+ * Whether this run can set its own follow-ups. Only a conversation the owner started can tell
+ * what is still open with them; a routine, webhook, channel, subagent or hand-off from another
+ * bot cannot.
  */
 export function followUpsOffered(
   tools: readonly { name: string }[],
   ownerStartedRun: boolean,
+  trigger: string,
 ): boolean {
   return (
     ownerStartedRun &&
+    trigger !== "routine" &&
     FOLLOW_UP_TOOL_NAMES.every((name) => tools.some((tool) => tool.name === name))
   );
 }

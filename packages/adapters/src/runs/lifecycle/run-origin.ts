@@ -1,4 +1,4 @@
-import { BACKGROUND_HELPER_TRIGGER, HELPER_RESULT_TRIGGER, isOwnerStartedRun } from "@rakazo/core";
+import { BACKGROUND_HELPER_TRIGGER, HELPER_RESULT_TRIGGER } from "@rakazo/core";
 import type { PrismaClient, Run } from "@rakazo/db";
 import { storedMessageBlocks } from "@rakazo/db";
 
@@ -20,7 +20,9 @@ export function runStartedByMember(
   trigger: string,
   source: { ownerStartedRun: boolean; nonOwnerChat: boolean },
 ): boolean {
-  return isOwnerStartedRun(trigger, source.ownerStartedRun) && !source.nonOwnerChat;
+  if (source.nonOwnerChat) return false;
+  if (trigger === "follow_up") return source.ownerStartedRun;
+  return trigger === "user" || trigger === "call_end";
 }
 
 /** Resolve the conversation that authorized delegation, including after restart or a result wake. */

@@ -11,6 +11,8 @@ import { serverRpc } from "../clients/server-rpc.js";
 import { computersRpc } from "../computers/computers-rpc.js";
 import { tailnetRpc } from "../computers/tailnet-rpc.js";
 import { integrationsRpc } from "../integrations/integrations-rpc.js";
+import { meetingCalendarRpc } from "../meetings/calendar.js";
+import { meetingsRpc } from "../meetings/meetings.js";
 import { modelsRpc } from "../models/models-rpc.js";
 import { routinesRpc } from "../routines/routines-rpc.js";
 import { runsRpc } from "../runs/runs-rpc.js";
@@ -28,6 +30,8 @@ export const appContract = {
   ...modelsRpc,
   ...botsRpc,
   ...threadsRpc,
+  ...meetingsRpc,
+  ...meetingCalendarRpc,
   ...routinesRpc,
   ...artifactsRpc,
   ...skillsRpc,
